@@ -101,96 +101,273 @@ if (tgv('6.9')) tg.CloudStorage.getItem('save', (err, v) => {
   } catch (e) {}
 });
 
-// ================= звук (всё синтезируется, файлов нет) =================
-let AC = null, NB = null, masterG, sfxG, musG;
+// ================= звук (синтез в реальном времени + можно подложить mp3 в папку sfx) =================
+let AC = null, NB = null, masterG, sfxG, musG, revIn, DIST = null;
+// iPhone: звук мини-приложения глушится беззвучным режимом. Просим «медиа»-режим, как у видео
+try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+let unlockEl = null;
+function silentWav() {
+  const n = 4000, b = new Uint8Array(44 + n), v = new DataView(b.buffer), w = (o, s) => [...s].forEach((c, i) => b[o + i] = c.charCodeAt(0));
+  w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true);
+  b.fill(128, 44);
+  let s = ''; b.forEach(x => s += String.fromCharCode(x)); return 'data:audio/wav;base64,' + btoa(s);
+}
+function iosUnlock() {
+  // тихий <audio loop> переводит iOS в режим воспроизведения медиа — WebAudio становится слышно с выключенным звонком
+  if (!unlockEl) {
+    unlockEl = document.createElement('audio');
+    unlockEl.setAttribute('playsinline', ''); unlockEl.setAttribute('webkit-playsinline', '');
+    unlockEl.loop = true; unlockEl.src = silentWav();
+  }
+  if (unlockEl.paused && !document.hidden) unlockEl.play().catch(() => {});
+}
 function audioInit() {
-  if (AC) { if (AC.state === 'suspended' && !document.hidden) AC.resume(); return; }
-  try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
-  masterG = AC.createGain(); masterG.gain.value = 0.7; masterG.connect(AC.destination);
+  iosUnlock();
+  if (AC) { if (AC.state !== 'running' && !document.hidden) AC.resume().catch(() => {}); return; }
+  try { AC = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' }); } catch (e) { return; }
+  const unl = AC.createBufferSource(); unl.buffer = AC.createBuffer(1, 1, 22050); unl.connect(AC.destination); unl.start(0);
+  if (AC.state !== 'running') AC.resume().catch(() => {});
+  masterG = AC.createGain(); masterG.gain.value = 0.9;
+  const comp = AC.createDynamicsCompressor();
+  comp.threshold.value = -16; comp.knee.value = 10; comp.ratio.value = 5; comp.attack.value = 0.002; comp.release.value = 0.18;
+  masterG.connect(comp); comp.connect(AC.destination);
   sfxG = AC.createGain(); sfxG.connect(masterG);
   musG = AC.createGain(); musG.connect(masterG);
+  // ревербератор (общий «зал» для эха)
+  const len = Math.floor(AC.sampleRate * 1.7), ir = AC.createBuffer(2, len, AC.sampleRate);
+  for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2); }
+  const conv = AC.createConvolver(); conv.buffer = ir;
+  revIn = AC.createGain(); const revOut = AC.createGain(); revOut.gain.value = 0.5;
+  revIn.connect(conv); conv.connect(revOut); revOut.connect(masterG);
   NB = AC.createBuffer(1, AC.sampleRate, AC.sampleRate);
   const d = NB.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  applyAudioPrefs(); startMusic();
+  DIST = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 511.5 - 1; DIST[i] = (1 + 18) * x / (1 + 18 * Math.abs(x)); }
+  applyAudioPrefs(); startMusic(); loadSfx();
 }
 function applyAudioPrefs() {
   if (sfxG) sfxG.gain.value = SAVE.snd ? 1 : 0;
-  if (musG) musG.gain.value = SAVE.mus ? 0.22 : 0;
+  if (musG) musG.gain.value = SAVE.mus ? 0.55 : 0;
   ['', '2'].forEach(s => {
     const a = document.getElementById('sndBtn' + s), b = document.getElementById('musBtn' + s);
     if (a) a.textContent = SAVE.snd ? '🔊 Звук' : '🔇 Звук'; if (b) b.textContent = SAVE.mus ? '🎵 Музыка' : '🚫 Музыка';
   });
 }
-addEventListener('pointerdown', audioInit, true);
-addEventListener('keydown', audioInit, true);
+['pointerdown', 'touchend', 'click', 'keydown'].forEach(ev => addEventListener(ev, audioInit, true));
 const sOK = () => AC && SAVE.snd && AC.state === 'running';
-function tone(f, dur, o = {}) {
-  const t = o.t || AC.currentTime, osc = AC.createOscillator(), g = AC.createGain();
-  osc.type = o.type || 'square'; osc.frequency.setValueAtTime(f, t);
-  if (o.f2) osc.frequency.exponentialRampToValueAtTime(o.f2, t + dur);
-  g.gain.setValueAtTime(o.vol || 0.15, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  let n = osc;
-  if (o.filter) { const fl = AC.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = o.filter; osc.connect(fl); n = fl; }
-  n.connect(g); g.connect(o.dest || sfxG); osc.start(t); osc.stop(t + dur + 0.03);
+
+// --- кирпичики синтеза ---
+function out(node, o) {
+  node.connect(o.dest || sfxG);
+  if (o.rev) { const s = AC.createGain(); s.gain.value = o.rev; node.connect(s); s.connect(revIn); }
 }
-function noise(dur, o = {}) {
+function shapeEnv(g, t, dur, o) {
+  const a = o.a || 0.002, v = o.vol == null ? 0.2 : o.vol;
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v, t + a);
+  if (o.hold) g.gain.setValueAtTime(v, t + a + o.hold);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+}
+function filt(n, t, dur, o) {
+  if (!(o.lp || o.hp || o.bp)) return n;
+  const fl = AC.createBiquadFilter(); fl.type = o.lp ? 'lowpass' : o.hp ? 'highpass' : 'bandpass';
+  fl.frequency.setValueAtTime(o.lp || o.hp || o.bp, t);
+  if (o.f2c) fl.frequency.exponentialRampToValueAtTime(o.f2c, t + dur);
+  fl.Q.value = o.q || 0.8; n.connect(fl); return fl;
+}
+function dist(n) { const ws = AC.createWaveShaper(); ws.curve = DIST; ws.oversample = '2x'; n.connect(ws); return ws; }
+function osc(type, f, dur, o = {}) {
+  const t = o.t || AC.currentTime, x = AC.createOscillator(), g = AC.createGain();
+  x.type = type; x.frequency.setValueAtTime(f, t);
+  if (o.f2) x.frequency.exponentialRampToValueAtTime(Math.max(1, o.f2), t + (o.slide || dur));
+  if (o.det) x.detune.value = o.det;
+  if (o.vib) { const l = AC.createOscillator(), lg = AC.createGain(); l.frequency.value = o.vib; lg.gain.value = o.vibAmt || 8; l.connect(lg); lg.connect(x.frequency); l.start(t); l.stop(t + dur + 0.05); }
+  let n = filt(x, t, dur, o); if (o.dist) n = dist(n);
+  shapeEnv(g, t, dur, o); n.connect(g); out(g, o); x.start(t); x.stop(t + dur + 0.05);
+}
+function nz(dur, o = {}) {
   const t = o.t || AC.currentTime, s = AC.createBufferSource(), fl = AC.createBiquadFilter(), g = AC.createGain();
   s.buffer = NB; fl.type = o.type || 'lowpass'; fl.frequency.setValueAtTime(o.f || 1000, t);
   if (o.f2) fl.frequency.exponentialRampToValueAtTime(o.f2, t + dur);
-  fl.Q.value = o.q || 1;
-  g.gain.setValueAtTime(o.vol || 0.2, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  s.connect(fl); fl.connect(g); g.connect(o.dest || sfxG); s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.03);
+  fl.Q.value = o.q || 0.8; s.connect(fl);
+  let n = o.dist ? dist(fl) : fl;
+  shapeEnv(g, t, dur, o); n.connect(g); out(g, o); s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.05);
 }
 const lastS = {};
 const can = (k, ms) => { const n = performance.now(); if (n - (lastS[k] || 0) < ms) return false; lastS[k] = n; return true; };
+
+// --- звуки игры ---
 const SFX = {
   shot(id) {
-    if (!sOK() || !can('shot', 70)) return;
+    if (!sOK() || !can('shot', 60)) return;
+    const r = rnd(0.9, 1.1);
     switch (id) {
-      case 0: noise(0.07, { type: 'highpass', f: 1400, vol: 0.12 }); tone(320, 0.05, { f2: 90, vol: 0.05 }); break;
-      case 1: noise(0.05, { type: 'highpass', f: 1800, vol: 0.12 }); tone(260, 0.04, { f2: 80, vol: 0.05 }); break;
-      case 2: noise(0.18, { f: 3000, f2: 250, vol: 0.28 }); tone(120, 0.12, { type: 'sine', f2: 50, vol: 0.2 }); break;
-      case 3: noise(0.035, { type: 'highpass', f: 2200, vol: 0.09 }); break;
-      case 4: tone(1400, 0.1, { type: 'sawtooth', f2: 250, vol: 0.045 }); break;
-      case 5: noise(0.25, { f: 900, f2: 180, vol: 0.18 }); break;
-      case 6: tone(500, 0.14, { type: 'sine', f2: 1300, vol: 0.07 }); tone(250, 0.14, { type: 'triangle', f2: 600, vol: 0.05 }); break;
+      case 0: nz(0.03, { type: 'highpass', f: 3000, vol: 0.22 }); nz(0.12, { type: 'bandpass', f: 1200 * r, f2: 450, vol: 0.3 }); osc('sine', 160 * r, 0.09, { f2: 50, vol: 0.32 }); break;
+      case 1: nz(0.025, { type: 'highpass', f: 3500, vol: 0.22 }); nz(0.09, { type: 'bandpass', f: 1700 * r, f2: 650, vol: 0.27 }); osc('sine', 140 * r, 0.07, { f2: 45, vol: 0.28 }); break;
+      case 2: nz(0.04, { type: 'highpass', f: 2500, vol: 0.3 }); nz(0.32, { f: 3200, f2: 180, vol: 0.45, dist: true, rev: 0.12 }); osc('sine', 110 * r, 0.22, { f2: 35, vol: 0.5 }); break;
+      case 3: nz(0.02, { type: 'highpass', f: 4000, vol: 0.18 }); nz(0.05, { type: 'bandpass', f: 1900 * r, vol: 0.2 }); osc('sine', 120, 0.04, { f2: 50, vol: 0.18 }); break;
+      case 4: osc('sawtooth', 1900 * r, 0.14, { f2: 220, vol: 0.08, lp: 5000 }); osc('square', 1890 * r, 0.12, { f2: 240, vol: 0.045, lp: 3500, det: 14, rev: 0.15 }); break;
+      case 5: nz(0.42, { type: 'bandpass', f: 280, f2: 2600, q: 1.6, vol: 0.32, rev: 0.12 }); osc('sine', 90, 0.18, { f2: 40, vol: 0.4 }); break;
+      case 6: osc('sine', 300 * r, 0.18, { f2: 1400, vol: 0.16, rev: 0.15 }); osc('square', 150 * r, 0.15, { f2: 700, vol: 0.05, lp: 2200 }); nz(0.14, { type: 'highpass', f: 5000, vol: 0.07 }); break;
     }
   },
-  zdie() { if (!sOK() || !can('zd', 45)) return; noise(0.1, { f: 700, vol: 0.13 }); tone(150 + Math.random() * 60, 0.1, { type: 'sawtooth', f2: 60, vol: 0.04 }); },
-  hurt() { if (!sOK() || !can('hu', 90)) return; tone(260, 0.14, { f2: 110, vol: 0.07 }); },
-  coin() { if (!sOK() || !can('co', 50)) return; tone(988, 0.05, { vol: 0.06 }); tone(1319, 0.1, { vol: 0.06, t: AC.currentTime + 0.05 }); },
-  pickup() { if (!sOK()) return; [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.1, { vol: 0.07, t: AC.currentTime + i * 0.06 })); },
-  good() { if (!sOK()) return; tone(523, 0.09, { type: 'triangle', vol: 0.14 }); tone(784, 0.16, { type: 'triangle', vol: 0.14, t: AC.currentTime + 0.08 }); },
-  bad() { if (!sOK()) return; tone(300, 0.3, { type: 'sawtooth', f2: 110, vol: 0.09, filter: 1200 }); },
-  thud() { if (!sOK() || !can('th', 60)) return; tone(170, 0.05, { type: 'triangle', vol: 0.06 }); },
-  crate() { if (!sOK()) return; noise(0.25, { f: 1400, f2: 200, vol: 0.25 }); tone(110, 0.2, { type: 'triangle', f2: 50, vol: 0.15 }); },
-  boom() { if (!sOK() || !can('bo', 80)) return; noise(0.55, { f: 1600, f2: 60, vol: 0.45 }); tone(90, 0.45, { type: 'sine', f2: 28, vol: 0.4 }); },
-  boss() { if (!sOK()) return; tone(85, 1.2, { type: 'sawtooth', f2: 38, vol: 0.22, filter: 500 }); tone(90, 1.2, { type: 'sawtooth', f2: 40, vol: 0.18, filter: 400 }); noise(1, { f: 400, f2: 80, vol: 0.2 }); },
-  spit() { if (!sOK() || !can('sp', 120)) return; noise(0.12, { type: 'bandpass', f: 900, q: 4, vol: 0.12 }); },
-  win() { if (!sOK()) return; [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, 0.16, { vol: 0.08, t: AC.currentTime + i * 0.1 })); },
-  lose() { if (!sOK()) return; tone(400, 0.9, { type: 'sawtooth', f2: 70, vol: 0.12, filter: 900 }); },
-  click() { if (!sOK()) return; tone(700, 0.04, { vol: 0.05 }); },
+  zdie() {
+    if (!sOK() || !can('zd', 40)) return;
+    const r = rnd(0.8, 1.25);
+    nz(0.14, { f: 900, f2: 200, vol: 0.28 });
+    osc('sawtooth', 115 * r, 0.32, { f2: 60, vol: 0.12, lp: 750, vib: 18, vibAmt: 14, a: 0.01 });
+  },
+  hurt() {
+    if (!sOK() || !can('hu', 80)) return;
+    nz(0.06, { type: 'bandpass', f: 500, vol: 0.25 });
+    osc('triangle', 230 * rnd(0.9, 1.1), 0.15, { f2: 140, vol: 0.14, bp: 900, q: 1.2 });
+  },
+  coin() {
+    if (!sOK() || !can('co', 45)) return;
+    const t = AC.currentTime;
+    osc('square', 1976, 0.07, { vol: 0.06, lp: 6000 }); osc('square', 2637, 0.2, { vol: 0.06, lp: 6000, t: t + 0.06, rev: 0.2 });
+  },
+  pickup() {
+    if (!sOK()) return;
+    const t = AC.currentTime;
+    nz(0.03, { type: 'highpass', f: 2000, vol: 0.25 }); nz(0.03, { type: 'highpass', f: 1500, vol: 0.25, t: t + 0.09 });
+    [523, 659, 784, 1047, 1319].forEach((f, i) => osc('triangle', f, 0.16, { vol: 0.12, t: t + 0.15 + i * 0.05, rev: 0.25 }));
+  },
+  good() {
+    if (!sOK()) return;
+    const t = AC.currentTime;
+    osc('sine', 400, 0.35, { f2: 1200, vol: 0.18, rev: 0.2 }); osc('triangle', 800, 0.3, { f2: 2000, vol: 0.06, t: t + 0.05 });
+    for (let i = 0; i < 4; i++) osc('sine', rnd(2000, 4000), 0.12, { vol: 0.04, t: t + 0.1 + i * 0.05, rev: 0.4 });
+  },
+  bad() {
+    if (!sOK()) return;
+    osc('sawtooth', 380, 0.45, { f2: 90, vol: 0.14, lp: 1500, vib: 12, vibAmt: 20 });
+    osc('square', 190, 0.45, { f2: 45, vol: 0.06, lp: 800 });
+  },
+  thud() {
+    if (!sOK() || !can('th', 50)) return;
+    osc('triangle', 230 * rnd(0.9, 1.1), 0.06, { f2: 150, vol: 0.14 }); nz(0.05, { type: 'bandpass', f: 700, vol: 0.1 });
+  },
+  crate() {
+    if (!sOK()) return;
+    const t = AC.currentTime;
+    nz(0.06, { type: 'highpass', f: 1500, vol: 0.32 });
+    for (let i = 0; i < 4; i++) nz(0.08, { type: 'bandpass', f: rnd(800, 2500), q: 3, vol: 0.2, t: t + i * 0.04 });
+    osc('triangle', 140, 0.25, { f2: 60, vol: 0.25 }); nz(0.35, { f: 1200, f2: 150, vol: 0.22, rev: 0.15 });
+  },
+  boom() {
+    if (!sOK() || !can('bo', 80)) return;
+    nz(0.05, { type: 'highpass', f: 2000, vol: 0.4 });
+    nz(1.3, { f: 3500, f2: 60, vol: 0.65, dist: true, rev: 0.3 });
+    osc('sine', 70, 0.9, { f2: 25, vol: 0.7 });
+  },
+  boss() {
+    if (!sOK()) return;
+    [-14, 0, 9].forEach(dt => osc('sawtooth', 78, 2.2, { f2: 45, det: dt * 10, vol: 0.12, lp: 900, f2c: 180, vib: 7, vibAmt: 8, a: 0.15, dist: true, rev: 0.35 }));
+    nz(2, { type: 'bandpass', f: 450, f2: 140, q: 1, vol: 0.3, a: 0.2, rev: 0.3 });
+  },
+  spit() {
+    if (!sOK() || !can('sp', 110)) return;
+    nz(0.2, { type: 'bandpass', f: 600, f2: 2000, q: 4, vol: 0.25 }); osc('sine', 300, 0.1, { f2: 900, vol: 0.08, t: AC.currentTime + 0.05 });
+  },
+  win() {
+    if (!sOK()) return;
+    const t = AC.currentTime, seq = [[523, 659, 784], [587, 698, 880], [659, 784, 988], [1047, 1319, 1568]];
+    seq.forEach((ch, i) => ch.forEach(f => {
+      const dur = i === 3 ? 1.1 : 0.16;
+      osc('square', f, dur, { vol: 0.045, lp: 3200, t: t + i * 0.15, hold: i === 3 ? 0.4 : 0, rev: 0.3 });
+      osc('triangle', f / 2, dur, { vol: 0.06, t: t + i * 0.15, hold: i === 3 ? 0.4 : 0 });
+    }));
+  },
+  lose() {
+    if (!sOK()) return;
+    const t = AC.currentTime;
+    [392, 370, 349, 294].forEach((f, i) => osc('sawtooth', f, i === 3 ? 1.2 : 0.32, { vol: 0.08, lp: 1300, vib: 5, vibAmt: 6, t: t + i * 0.28, rev: 0.35 }));
+    osc('sine', 73, 1.4, { vol: 0.25, t: t + 0.84 });
+  },
+  click() { if (!sOK()) return; osc('square', 1200, 0.03, { vol: 0.04, lp: 5000 }); osc('sine', 600, 0.05, { vol: 0.07 }); },
 };
-// музыка: простой секвенсор (бас + барабаны), в бою и на боссе становится плотнее
-const BPM = 116, BASS = [45, 45, 48, 45, 43, 43, 41, 40];
+
+// ---- звуки из файлов (sfx/*.mp3, например из ElevenLabs). Нет файла — играет синтез ----
+const SHOT_FILES = ['shot_pistol', 'shot_rifle', 'shot_shotgun', 'shot_minigun', 'shot_laser', 'shot_rocket', 'shot_plasma'];
+const SFX_MAP = { zdie: 'zombie_die', hurt: 'soldier_hit', coin: 'coin', pickup: 'pickup', good: 'gate_good', bad: 'gate_bad',
+  thud: 'crate_hit', crate: 'crate_break', boom: 'explosion', boss: 'boss_roar', spit: 'spit', win: 'win', lose: 'lose', click: 'click' };
+const THR = { zombie_die: 45, soldier_hit: 90, coin: 50, crate_hit: 60, explosion: 80, spit: 120 };
+const VOL = { zombie_die: 0.45, crate_hit: 0.35, coin: 0.5, click: 0.4, soldier_hit: 0.5 };
+const BUF = {};
+let musSrc = null;
+function loadSfx() {
+  // список файлов берётся из sfx/list.json (например ["coin","music"]) — так нет лишних запросов, если папки нет
+  fetch('sfx/list.json').then(r => r.ok ? r.json() : []).catch(() => []).then(list => (list || []).forEach(n =>
+    fetch('sfx/' + n + '.mp3').then(r => r.ok ? r.arrayBuffer() : Promise.reject())
+      .then(a => AC.decodeAudioData(a)).then(b => { BUF[n] = b; if (n === 'music') startFileMusic(); }).catch(() => {})));
+}
+function playBuf(name) {
+  const b = BUF[name]; if (!b) return false;
+  if (!sOK()) return true;
+  const ms = name.startsWith('shot_') ? 70 : (THR[name] || 0);
+  if (ms && !can('f_' + name, ms)) return true;
+  const s = AC.createBufferSource(), g = AC.createGain();
+  s.buffer = b; s.playbackRate.value = rnd(0.94, 1.06);
+  g.gain.value = name.startsWith('shot_') ? 0.3 : (VOL[name] || 0.7);
+  s.connect(g); g.connect(sfxG); s.start();
+  return true;
+}
+function startFileMusic() {
+  if (musSrc) return;
+  const g = AC.createGain(); g.gain.value = 1; g.connect(musG);
+  musSrc = AC.createBufferSource(); musSrc.buffer = BUF.music; musSrc.loop = true; musSrc.connect(g); musSrc.start();
+}
+for (const k in SFX_MAP) { const synth = SFX[k]; SFX[k] = (...a) => { if (!playBuf(SFX_MAP[k])) synth(...a); }; }
+{ const synthShot = SFX.shot; SFX.shot = id => { if (!playBuf(SHOT_FILES[id])) synthShot(id); }; }
+
+// ================= музыка: генерируемый трек ля-минор, 126 BPM =================
+// меню — пэды и мягкое арпеджио; бой — + барабаны и бас; босс — жёсткий бас, хэты 16-ми, быстрое арпеджио
+const BPM = 126, STEP = 60 / BPM / 4;
+const PROG = [[57, 60, 64], [53, 57, 60], [55, 59, 62], [52, 55, 59]]; // Am F G Em
+const ROOT = [45, 41, 43, 40];
+const BASS_PAT = [0, 2, 3, 6, 8, 10, 11, 14];
 let musStep = 0, musNext = 0, musTimer = null;
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 function startMusic() { if (musTimer) return; musNext = AC.currentTime + 0.1; musTimer = setInterval(schedMusic, 25); }
 function schedMusic() {
   if (!AC || AC.state !== 'running') return;
-  if (!SAVE.mus || isPaused()) { musNext = AC.currentTime + 0.05; return; }
+  if (musSrc || !SAVE.mus || isPaused()) { musNext = AC.currentTime + 0.05; return; }
   const fight = G && !G.over, boss = fight && G.boss && !G.boss.dead;
-  while (musNext < AC.currentTime + 0.12) {
-    const s = musStep, t = musNext, o = { dest: musG, t };
-    const note = BASS[Math.floor(s / 8) % 8];
-    if (s % 8 === 0 || s % 8 === 3 || s % 8 === 6) tone(mtof(note), 0.2, { type: 'sawtooth', vol: 0.14, filter: boss ? 900 : 500, ...o });
+  while (musNext < AC.currentTime + 0.15) {
+    const t = musNext, s = musStep % 16, bar = Math.floor(musStep / 16), c = bar % 4, ch = PROG[c], root = ROOT[c];
+    const secB = Math.floor(bar / 8) % 2 === 1, M = { dest: musG, t };
+    // пэд — аккорд на весь такт
+    if (s === 0) ch.forEach(n => [-7, 7].forEach(dt =>
+      osc('sawtooth', mtof(n), STEP * 16, { ...M, vol: fight ? 0.018 : 0.026, lp: boss ? 1600 : 950, det: dt, a: 0.25, hold: STEP * 16 - 0.6, rev: 0.45 })));
     if (fight) {
-      if (s % 4 === 0) tone(140, 0.18, { type: 'sine', f2: 40, vol: 0.55, ...o });
-      if (s % 8 === 4) noise(0.12, { type: 'bandpass', f: 1800, vol: 0.2, ...o });
+      // бочка + щелчок
+      if (s % 4 === 0) { osc('sine', 150, 0.28, { ...M, f2: 42, slide: 0.12, vol: 0.62 }); nz(0.015, { ...M, type: 'highpass', f: 3000, vol: 0.12 }); }
+      if (boss && (s === 7 || s === 15)) osc('sine', 150, 0.2, { ...M, f2: 42, slide: 0.1, vol: 0.4 });
+      // малый
+      if (s === 4 || s === 12) { nz(0.2, { ...M, type: 'bandpass', f: 1800, q: 0.6, vol: 0.3, rev: 0.25 }); osc('triangle', 190, 0.08, { ...M, f2: 150, vol: 0.14 }); }
+      // хэты
+      if (boss || s % 2 === 0) nz(0.035, { ...M, type: 'highpass', f: 7500, vol: s % 4 === 2 ? 0.08 : 0.045 });
+      if (secB && s % 4 === 2) nz(0.14, { ...M, type: 'highpass', f: 6500, vol: 0.045 });
+      // бас
+      if (BASS_PAT.includes(s)) {
+        const oct = (s === 6 || s === 14) ? 12 : 0;
+        osc('sawtooth', mtof(root + oct), STEP * 1.7, { ...M, vol: boss ? 0.1 : 0.13, lp: boss ? 1500 : 650, f2c: 180, dist: boss, a: 0.004 });
+        osc('sine', mtof(root - 12 + oct), STEP * 1.7, { ...M, vol: 0.12 });
+      }
+      // арпеджио во второй части и на боссе
+      if ((secB || boss) && (boss || s % 2 === 0)) {
+        const n = ch[(s >> (boss ? 0 : 1)) % 3] + 12 + ((s >> 2) % 2 ? 12 : 0);
+        osc('square', mtof(n), STEP * 0.9, { ...M, vol: boss ? 0.03 : 0.025, lp: 2600, rev: 0.3 });
+      }
+      // стабы на боссе
+      if (boss && s === 0) ch.forEach(n => osc('sawtooth', mtof(n + 12), 0.25, { ...M, vol: 0.03, lp: 2500, dist: true }));
+    } else {
+      // меню: мягкий бас и арпеджио
+      if (s === 0 || s === 10) osc('sine', mtof(root), STEP * 6, { ...M, vol: 0.14, a: 0.02 });
+      if (s % 2 === 0) { const n = ch[(s >> 1) % 3] + 12; osc('triangle', mtof(n), STEP * 1.6, { ...M, vol: 0.04, rev: 0.4 }); }
+      if (s % 4 === 2) nz(0.03, { ...M, type: 'highpass', f: 8000, vol: 0.025 });
     }
-    if (boss || s % 2 === 1) noise(0.03, { type: 'highpass', f: 7000, vol: boss ? 0.06 : 0.05, ...o });
-    if (boss && s % 16 === 0) tone(mtof(note + 24), 0.5, { type: 'square', vol: 0.03, filter: 2000, ...o });
-    musNext += 60 / BPM / 4; musStep = (musStep + 1) % 64;
+    musNext += STEP; musStep++;
   }
 }
 
@@ -626,12 +803,25 @@ function update(dt) {
   g.fireT -= dt; g.flash = Math.max(0, g.flash - dt);
   while (g.fireT <= 0) {
     g.fireT += 1 / (w.rate * g.rateMul);
-    const pel = w.pellets || 1, k = Math.min(g.n, Math.floor(24 / pel)), dmg = w.dmg * g.dmgMul * g.n / k;
+    // стреляют бойцы по всей ширине толпы (каждый залп — другие), а не только центр
+    const pel = w.pellets || 1, N = pts.length, k = Math.min(g.n, N, Math.floor(36 / pel)), dmg = w.dmg * g.dmgMul * g.n / k;
+    const stride = N / k, shift = ((g.vol = (g.vol || 0) + 1) * 0.618 * stride) % stride;
+    g.shooters = [];
     for (let i = 0; i < k; i++) {
-      const p = pts[i];
+      const idx = Math.floor(i * stride + shift) % N, p = pts[idx];
+      const sx = g.squadX + p[0] + 4.5, sy = SQY + p[1] - 16;
+      g.shooters.push(idx);
+      // лёгкий автоприцел: ближайший зомби впереди в коридоре ±75px
+      let aim = 0, bestD = 1e9;
+      for (const z of g.zombies) {
+        if (z.dead || z.y > sy - 10 || z.y < -20) continue;
+        const dx = z.x - sx, dy = sy - z.y;
+        if (Math.abs(dx) < 75 && dy < bestD) { bestD = dy; aim = Math.atan2(dx, dy); }
+      }
+      aim = clamp(aim, -0.4, 0.4);
       for (let j = 0; j < pel; j++) {
-        const a = pel > 1 ? (j / (pel - 1) - 0.5) * w.spread * 2 + rnd(-0.03, 0.03) : rnd(-0.015, 0.015);
-        g.bullets.push({ x: g.squadX + p[0] + 4.5, y: SQY + p[1] - 16 - rnd(0, 8), vx: Math.sin(a) * 650, vy: -Math.cos(a) * 650,
+        const a = aim + (pel > 1 ? (j / (pel - 1) - 0.5) * w.spread * 2 + rnd(-0.03, 0.03) : rnd(-0.015, 0.015));
+        g.bullets.push({ x: sx, y: sy - rnd(0, 8), vx: Math.sin(a) * 650, vy: -Math.cos(a) * 650,
           dmg, left: 1 + (w.pierce || 0), hitSet: w.pierce ? new Set() : null, life: pel > 1 ? 0.55 : 2 });
       }
     }
@@ -670,13 +860,15 @@ function update(dt) {
       }
     }
     if (b.dead) continue;
-    for (const gt of g.gates) {
+    // пули пролетают сквозь ворота (и бьют зомби за ними), но каждая один раз прибавляет число
+    if (!b.gate) for (const gt of g.gates) {
       if (gt.used || Math.abs(b.y - gt.y) > 16) continue;
       const s = b.x < MID ? gt.L : gt.R;
-      if (s.op === 'x') continue;
-      b.dead = true; s.flash = 0.06;
-      s.prog += b.dmg;
-      const need = 24 * Math.pow(g.diff, 1.35) * (1 + s.v / 15);
+      b.gate = true;
+      if (s.op === 'x') break;
+      s.flash = 0.06;
+      s.prog += 1; // считаем попадания, а не урон — огромная толпа не раздувает ворота до небес
+      const need = (12 + (s.op === '+' ? s.v : 0) * 2.5) * (1 + (g.level - 1) * 0.08);
       while (s.prog >= need) {
         s.prog -= need;
         if (s.op === '+') s.v++;
@@ -904,7 +1096,7 @@ function drawSquad() {
   for (const i of pts.order) spr(SOLDIER, g.squadX + pts[i][0], SQY + pts[i][1]);
   if (g.flash > 0) {
     ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = WPN[g.wpn].col;
-    for (let i = 0; i < Math.min(pts.length, 14); i++) { const fx = g.squadX + pts[i][0] + 4.5, fy = SQY + pts[i][1] - 19; ctx.globalAlpha = 0.9; circle(fx, fy, 3.5); ctx.globalAlpha = 0.35; circle(fx, fy, 7); }
+    for (const i of (g.shooters || []).slice(0, 20)) { if (!pts[i]) continue; const fx = g.squadX + pts[i][0] + 4.5, fy = SQY + pts[i][1] - 19; ctx.globalAlpha = 0.9; circle(fx, fy, 3.5); ctx.globalAlpha = 0.35; circle(fx, fy, 7); }
     ctx.restore();
   }
   const by = SQY - pts.hh - 36, label = String(g.n);
@@ -1072,8 +1264,8 @@ function loop(now) {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (G && !G.over) pauseGame(); else persist();
-    if (AC) AC.suspend();
-  } else { last = performance.now(); if (AC) AC.resume(); }
+    if (AC) AC.suspend(); if (unlockEl) unlockEl.pause();
+  } else { last = performance.now(); if (AC) AC.resume().catch(() => {}); if (unlockEl && AC) unlockEl.play().catch(() => {}); }
 });
 addEventListener('pagehide', () => { if (G && !G.over) bankCoins(); persist(); });
 renderMenu('start');
