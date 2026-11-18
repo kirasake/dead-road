@@ -943,7 +943,7 @@ function update(dt) {
       if (gt.used || Math.abs(b.y - gt.y) > 16) continue;
       const s = b.x < MID ? gt.L : gt.R;
       b.gate = true;
-      if (s.op === 'x') break;
+      if (s.op === 'x' || s.op === '/') break; // умножение и деление выстрелами не меняются
       s.flash = 0.06;
       s.prog += b.gw; // вес попадания: залп любой толпы прокачивает ворота как ~8 пуль
       const need = (12 + (s.op === '+' ? s.v : 0) * 2.5) * (1 + (g.level - 1) * 0.08);
