@@ -616,14 +616,22 @@ function pickType() {
   for (const [k, v] of w) { s -= v; if (s <= 0) return k; }
   return 'norm';
 }
+// эффективная сила толпы: растёт всё медленнее (3→3, 30→20, 100→37, 300→50)
+const effN = n => n / (1 + n / 60);
+function firepower() {
+  const w = WPN[G.wpn];
+  return effN(G.n) * w.dmg * (w.pellets || 1) * w.rate * G.dmgMul * G.rateMul; // урон в секунду по одной цели
+}
 function spawnZombie(x, y, type) {
-  const T = ZT[type], hp = Math.max(1, Math.round(2 * Math.pow(G.diff, 1.45) * T.hp));
+  // чем сильнее толпа, тем крепче зомби
+  const T = ZT[type], hp = Math.max(1, Math.round(2 * Math.pow(G.diff, 1.45) * T.hp * (1 + effN(G.n) / 25)));
   G.zombies.push({ type, x: clamp(x, ROAD_L + T.r, ROAD_R - T.r), y, hp, max: hp, r: T.r,
     spd: WORLD_V + rnd(...T.v) + Math.min(30, G.level * 1.5),
     track: type === 'runner' ? rnd(30, 50) : rnd(10, 30), wob: rnd(0, 6), hit: 0, spitT: rnd(1, 2.5) });
 }
 function spawnBoss() {
-  const mega = G.mega, hp = Math.round((mega ? 260 : 110) * Math.pow(G.diff, 1.5));
+  // босс живёт ~12 с (мега ~17 с) против твоей текущей огневой мощи (по боссу попадает примерно половина пуль)
+  const mega = G.mega, hp = Math.round(Math.max((mega ? 260 : 110) * Math.pow(G.diff, 1.5), firepower() * (mega ? 8 : 5.5)));
   const b = { type: mega ? 'mega' : 'boss', x: MID, y: -60, hp, max: hp, r: ZT[mega ? 'mega' : 'boss'].r, spd: 50, track: 30, wob: 0, hit: 0,
     boss: true, biteT: 0, summonT: 3, slamT: 6 };
   G.zombies.push(b); G.boss = b; G.bossSpawned = true;
@@ -632,14 +640,20 @@ function spawnBoss() {
 }
 function rndGate() {
   const r = Math.random(), d = G.diff;
-  if (r < 0.4) return { op: '+', v: ri(2, 4 + Math.floor(d * 1.8)), prog: 0 };
-  if (r < 0.53) return { op: 'x', v: 2, prog: 0 };
-  if (r < 0.57) return { op: 'x', v: 3, prog: 0 };
-  return { op: '-', v: ri(3, 5 + Math.floor(d * 3)), prog: 0 };
+  if (r < 0.36) return { op: '+', v: ri(2, 3 + Math.floor(d * 1.2)), prog: 0 };
+  // умножение — только для маленькой толпы, иначе снежный ком
+  if (r < 0.49 && G.n >= 30) return { op: '+', v: ri(4, 6 + Math.floor(d * 1.5)), prog: 0 };
+  if (r < 0.46) return { op: 'x', v: 2, prog: 0 };
+  if (r < 0.49) return { op: 'x', v: G.n < 12 ? 3 : 2, prog: 0 };
+  if (r < 0.62) return { op: '/', v: 2, prog: 0 };
+  if (r < 0.67 && G.level >= 3) return { op: '/', v: 3, prog: 0 };
+  // минус бьёт сильнее, если толпа большая
+  return { op: '-', v: ri(3, 5 + Math.floor(d * 3)) + Math.floor(G.n * 0.2), prog: 0 };
 }
+const badGate = s => s.op === '-' || s.op === '/';
 function spawnGates() {
   let L = rndGate(), R = rndGate();
-  if (L.op === '-' && R.op === '-' && Math.random() < 0.6) R = { op: '+', v: ri(2, 6), prog: 0 };
+  if (badGate(L) && badGate(R) && Math.random() < 0.6) R = { op: '+', v: ri(2, 5), prog: 0 };
   G.gates.push({ y: -40, L, R, used: false });
 }
 function spawnCrates() {
@@ -647,16 +661,16 @@ function spawnCrates() {
   const r = Math.random();
   sides.forEach((x, i) => {
     let kind = 'men';
-    if (i === 0 && r < 0.5) kind = 'wpn';
-    else if (r > 0.78) kind = 'coin';
-    const hp = kind === 'wpn' ? Math.round(28 * Math.pow(d, 1.35)) : Math.round(14 * Math.pow(d, 1.25));
-    G.crates.push({ x, y: -40, w: 74, h: 46, hp, max: hp, kind, v: ri(3, 6) + Math.floor(d), hit: 0 });
+    if (i === 0 && r < 0.32) kind = 'wpn';
+    else if (r > 0.65) kind = 'coin';
+    const hp = Math.round((kind === 'wpn' ? 35 * Math.pow(d, 1.35) : 16 * Math.pow(d, 1.25)) * (1 + effN(G.n) / 40));
+    G.crates.push({ x, y: -40, w: 74, h: 46, hp, max: hp, kind, v: ri(2, 4) + Math.floor(d / 2), hit: 0 });
   });
 }
 function spawnLoot(x, y, kind) { G.loot.push({ x: clamp(x, ROAD_L + 20, ROAD_R - 20), y, kind, bob: rnd(0, 6) }); }
 function spawnRoadLoot() {
   const x = Math.random() < 0.5 ? rnd(ROAD_L + 25, MID - 25) : rnd(MID + 25, ROAD_R - 25);
-  spawnLoot(x, -30, Math.random() < 0.6 ? 'wpn' : 'med');
+  spawnLoot(x, -30, Math.random() < 0.3 ? 'wpn' : 'med');
   for (let i = 0; i < ri(3, 4 + G.level); i++) spawnZombie(x + rnd(-40, 40), -60 - rnd(0, 70), pickType());
   const cx = x < MID ? rnd(MID + 30, ROAD_R - 30) : rnd(ROAD_L + 30, MID - 30);
   for (let i = 0; i < 6; i++) spawnLoot(cx, -30 - i * 28, 'coin');
@@ -664,9 +678,9 @@ function spawnRoadLoot() {
 function pickLoot(l) {
   l.dead = true;
   if (l.kind === 'coin') { addCoins(2); SFX.coin(); haptic('light'); return; }
-  if (l.kind === 'med') { const v = 3 + Math.floor(G.diff); setN(G.n + v); floatText(l.x, l.y - 20, '+' + v + ' бойцов', '#7CFC8A', 22); SFX.good(); haptic('medium'); return; }
+  if (l.kind === 'med') { const v = 2 + Math.floor(G.diff / 2); setN(G.n + v); floatText(l.x, l.y - 20, '+' + v + ' бойцов', '#7CFC8A', 22); SFX.good(); haptic('medium'); return; }
   if (G.wpn < WPN.length - 1) { G.wpn++; floatText(l.x, l.y - 20, WPN[G.wpn].name + '!', WPN[G.wpn].col, 26); }
-  else { G.dmgMul *= 1.1; floatText(l.x, l.y - 20, 'Урон +10%', '#ff5e3a', 24); }
+  else { const v = 15 + G.level * 3; addCoins(v); floatText(l.x, l.y - 20, '+' + Math.round(v * G.income) + ' 🪙', '#ffd23f', 24); }
   burst(l.x, l.y, 18, WPN[G.wpn].col, 170); ring(l.x, l.y, 40, WPN[G.wpn].col); SFX.pickup(); notify('success');
 }
 
@@ -717,7 +731,7 @@ function hitZombie(z, d) {
     burst(z.x, z.y, z.boss ? 50 : 9, '#7a1d1d', z.boss ? 240 : 130); decal(z.x, z.y, z.r * 0.9);
     SFX.zdie();
     if (z.type === 'boomer') explode(z.x, z.y, false);
-    if ((z.type === 'tank' || z.type === 'armor') && Math.random() < 0.25) spawnLoot(z.x, z.y, Math.random() < 0.5 ? 'wpn' : 'med');
+    if ((z.type === 'tank' || z.type === 'armor') && Math.random() < 0.07) spawnLoot(z.x, z.y, Math.random() < 0.5 ? 'wpn' : 'med');
     else if (!z.boss && Math.random() < 0.05) spawnLoot(z.x, z.y, 'coin');
     if (z.boss) { ring(z.x, z.y, 120, '#ff4d4d'); SFX.boom(); win(); }
   }
@@ -726,6 +740,7 @@ function applyGate(s) {
   const before = G.n;
   if (s.op === '+') setN(G.n + s.v);
   else if (s.op === 'x') setN(G.n * s.v);
+  else if (s.op === '/') setN(Math.ceil(G.n / s.v));
   else setN(G.n - s.v);
   if (G.over) return;
   const diff = G.n - before;
@@ -738,9 +753,10 @@ function breakCrate(c) {
     const v = 10 + G.level * 5; addCoins(v); floatText(c.x, c.y, '+' + Math.round(v * G.income) + ' 🪙', '#ffd23f', 24); SFX.coin();
   } else if (c.kind === 'wpn' && G.wpn < WPN.length - 1) {
     G.wpn++; floatText(c.x, c.y, WPN[G.wpn].name + '!', WPN[G.wpn].col, 26); SFX.pickup();
+  } else if (c.kind === 'wpn') {
+    const v = 20 + G.level * 5; addCoins(v); floatText(c.x, c.y, '+' + Math.round(v * G.income) + ' 🪙', '#ffd23f', 24); SFX.coin();
   } else {
-    const v = c.kind === 'wpn' ? c.v * 2 : c.v;
-    setN(G.n + v); floatText(c.x, c.y, '+' + v + ' бойцов', '#7CFC8A', 24); SFX.good();
+    setN(G.n + c.v); floatText(c.x, c.y, '+' + c.v + ' бойцов', '#7CFC8A', 24); SFX.good();
   }
   notify('success');
 }
@@ -781,7 +797,7 @@ function update(dt) {
     return;
   }
 
-  g.t += dt; g.diff = 1 + (g.level - 1) * 0.75 + g.t / 30; g.dist += WORLD_V * dt;
+  g.t += dt; g.diff = 1 + (g.level - 1) * 0.6 + g.t / 34; g.dist += WORLD_V * dt;
   const SQY = sqY();
 
   // декор на обочинах
@@ -804,7 +820,7 @@ function update(dt) {
   while (g.fireT <= 0) {
     g.fireT += 1 / (w.rate * g.rateMul);
     // стреляют бойцы по всей ширине толпы (каждый залп — другие), а не только центр
-    const pel = w.pellets || 1, N = pts.length, k = Math.min(g.n, N, Math.floor(36 / pel)), dmg = w.dmg * g.dmgMul * g.n / k;
+    const pel = w.pellets || 1, N = pts.length, k = Math.min(g.n, N, Math.floor(36 / pel)), dmg = w.dmg * g.dmgMul * effN(g.n) / k;
     const stride = N / k, shift = ((g.vol = (g.vol || 0) + 1) * 0.618 * stride) % stride;
     g.shooters = [];
     for (let i = 0; i < k; i++) {
@@ -816,13 +832,13 @@ function update(dt) {
       for (const z of g.zombies) {
         if (z.dead || z.y > sy - 10 || z.y < -20) continue;
         const dx = z.x - sx, dy = sy - z.y;
-        if (Math.abs(dx) < 75 && dy < bestD) { bestD = dy; aim = Math.atan2(dx, dy); }
+        if (Math.abs(dx) < 45 && dy < bestD) { bestD = dy; aim = Math.atan2(dx, dy); }
       }
-      aim = clamp(aim, -0.4, 0.4);
+      aim = clamp(aim, -0.25, 0.25);
       for (let j = 0; j < pel; j++) {
         const a = aim + (pel > 1 ? (j / (pel - 1) - 0.5) * w.spread * 2 + rnd(-0.03, 0.03) : rnd(-0.015, 0.015));
         g.bullets.push({ x: sx, y: sy - rnd(0, 8), vx: Math.sin(a) * 650, vy: -Math.cos(a) * 650,
-          dmg, left: 1 + (w.pierce || 0), hitSet: w.pierce ? new Set() : null, life: pel > 1 ? 0.55 : 2 });
+          dmg, gw: Math.min(1, 8 / (k * pel)), left: 1 + (w.pierce || 0), hitSet: w.pierce ? new Set() : null, life: pel > 1 ? 0.55 : H * 0.62 / 650 }); // пули летят ~60% экрана — зомби успевают показаться
       }
     }
     g.flash = 0.05; SFX.shot(g.wpn);
@@ -867,7 +883,7 @@ function update(dt) {
       b.gate = true;
       if (s.op === 'x') break;
       s.flash = 0.06;
-      s.prog += 1; // считаем попадания, а не урон — огромная толпа не раздувает ворота до небес
+      s.prog += b.gw; // вес попадания: залп любой толпы прокачивает ворота как ~8 пуль
       const need = (12 + (s.op === '+' ? s.v : 0) * 2.5) * (1 + (g.level - 1) * 0.08);
       while (s.prog >= need) {
         s.prog -= need;
@@ -965,7 +981,7 @@ function update(dt) {
   g.spawnZ -= dt;
   if (g.spawnZ <= 0) {
     g.spawnZ = Math.max(0.3, 1.25 / Math.sqrt(g.diff)) * (bossTime ? 2.5 : 1);
-    const cnt = ri(1, Math.min(7, 1 + Math.floor(g.diff))), cx = rnd(ROAD_L + 30, ROAD_R - 30);
+    const cnt = ri(1, Math.min(10, 1 + Math.floor(g.diff) + Math.floor(effN(g.n) / 12))), cx = rnd(ROAD_L + 30, ROAD_R - 30);
     if (!bossTime && Math.random() < 0.08) {
       for (let x = ROAD_L + 20; x < ROAD_R; x += 26) spawnZombie(x, -20 - rnd(0, 20), g.level >= 5 && Math.random() < 0.3 ? 'runner' : 'norm');
       floatText(MID, 90, 'ОРДА!', '#ff6b6b', 26);
@@ -975,8 +991,9 @@ function update(dt) {
     g.spawnO -= dt;
     if (g.spawnO <= 0) {
       g.spawnO = rnd(4, 5.5);
-      const k = g.objToggle++ % 3;
-      if (k === 0) spawnGates(); else if (k === 1) spawnCrates(); else spawnRoadLoot();
+      // ворота чаще, ящики и лут реже: ворота, ящики, ворота, лут
+      const k = g.objToggle++ % 4;
+      if (k === 0 || k === 2) spawnGates(); else if (k === 1) spawnCrates(); else spawnRoadLoot();
     }
   } else if (!g.bossSpawned) spawnBoss();
 }
@@ -1004,7 +1021,7 @@ function drawGate(gt) {
   const h = 36, y = gt.y;
   ctx.globalAlpha = gt.used ? 0.3 : 1;
   [[gt.L, ROAD_L, MID], [gt.R, MID, ROAD_R]].forEach(([s, x0, x1]) => {
-    const good = s.op !== '-';
+    const good = !badGate(s);
     const gr = ctx.createLinearGradient(0, y - h / 2, 0, y + h / 2);
     gr.addColorStop(0, good ? 'rgba(90,180,255,.75)' : 'rgba(255,90,90,.75)');
     gr.addColorStop(1, good ? 'rgba(30,90,220,.45)' : 'rgba(200,30,30,.45)');
@@ -1016,7 +1033,7 @@ function drawGate(gt) {
     const sh = (performance.now() / 8) % 300;
     ctx.beginPath(); ctx.moveTo(x0 + sh - 60, y + h / 2); ctx.lineTo(x0 + sh - 30, y - h / 2); ctx.lineTo(x0 + sh - 10, y - h / 2); ctx.lineTo(x0 + sh - 40, y + h / 2); ctx.fill();
     ctx.restore();
-    const label = s.op === 'x' ? '×' + s.v : (s.op === '+' ? '+' : '−') + s.v;
+    const label = ({ x: '×', '/': '÷', '+': '+', '-': '−' })[s.op] + s.v;
     txt(label, (x0 + x1) / 2, y + 1, 27, '#fff');
   });
   [ROAD_L - 4, MID, ROAD_R + 4].forEach(px => {
@@ -1029,7 +1046,7 @@ function drawGate(gt) {
 function drawCrate(c) {
   const x = c.x - c.w / 2, y = c.y - c.h / 2;
   const wpnNext = c.kind === 'wpn' && G.wpn < WPN.length - 1;
-  const col = c.kind === 'coin' ? '#ffd23f' : wpnNext ? WPN[G.wpn + 1].col : '#7CFC8A';
+  const col = c.kind === 'coin' || (c.kind === 'wpn' && !wpnNext) ? '#ffd23f' : wpnNext ? WPN[G.wpn + 1].col : '#7CFC8A';
   ctx.fillStyle = 'rgba(0,0,0,.35)'; rr(x + 4, y + 6, c.w, c.h, 8); ctx.fill();
   const gr = ctx.createLinearGradient(0, y, 0, y + c.h); gr.addColorStop(0, '#3e4550'); gr.addColorStop(1, '#22262c');
   ctx.fillStyle = c.hit > 0 ? '#f0f0f0' : gr; rr(x, y, c.w, c.h, 8); ctx.fill();
@@ -1038,7 +1055,7 @@ function drawCrate(c) {
   ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(x + 6, y + c.h - 9, c.w - 12, 4);
   ctx.fillStyle = col; ctx.fillRect(x + 6, y + c.h - 9, (c.w - 12) * Math.max(0, c.hp / c.max), 4);
   txt(String(Math.ceil(c.hp)), c.x, c.y - 3, 22, '#fff');
-  const lab = c.kind === 'coin' ? '🪙 Монеты' : wpnNext ? '🔫 ' + WPN[G.wpn + 1].name : '+' + (c.kind === 'wpn' ? c.v * 2 : c.v) + ' бойцов';
+  const lab = c.kind === 'coin' || (c.kind === 'wpn' && !wpnNext) ? '🪙 Монеты' : wpnNext ? '🔫 ' + WPN[G.wpn + 1].name : '+' + c.v + ' бойцов';
   ctx.font = '800 12px system-ui,sans-serif';
   const tw = ctx.measureText(lab).width + 14;
   ctx.fillStyle = 'rgba(0,0,0,.65)'; rr(c.x - tw / 2, y - 22, tw, 18, 9); ctx.fill();
@@ -1066,7 +1083,7 @@ function drawLoot(l) {
   ctx.fillStyle = col;
   if (l.kind === 'med') { ctx.fillRect(l.x - 2.5, y - 8, 5, 16); ctx.fillRect(l.x - 8, y - 2.5, 16, 5); }
   else { ctx.fillRect(l.x - 11, y - 3, 20, 5); ctx.fillRect(l.x - 11, y - 3, 6, 10); ctx.fillRect(l.x + 2, y + 2, 4, 5); }
-  const lab = l.kind === 'med' ? 'Бойцы' : G.wpn < WPN.length - 1 ? WPN[G.wpn + 1].name : 'Урон+';
+  const lab = l.kind === 'med' ? 'Бойцы' : G.wpn < WPN.length - 1 ? WPN[G.wpn + 1].name : 'Монеты';
   txt(lab, l.x, y - 23, 12, col);
 }
 
