@@ -34,6 +34,32 @@
   .up.max .c{color:#7CFC8A}
   .up:active{transform:scale(.96)}
   .sub{font-size:12px;opacity:.55}
+  /* боевой пропуск */
+  .bpbtn{position:relative;background:linear-gradient(#7b4dff,#4b23c9);border:0;color:#fff;border-radius:12px;padding:11px 22px;font-size:16px;font-weight:900;
+    cursor:pointer;font-family:inherit;box-shadow:0 4px 0 #2e1385}
+  .bpbtn:active{transform:translateY(3px);box-shadow:0 1px 0 #2e1385}
+  .dot{position:absolute;top:-5px;right:-5px;width:14px;height:14px;border-radius:50%;background:#ff3b3b;border:2px solid #fff}
+  #bp{justify-content:flex-start;background:radial-gradient(ellipse at 50% 0%,#2a1d4a,#0e110b 60%)}
+  .bpbox{width:100%;max-width:350px;background:#20261c;border:2px solid #3d4a34;border-radius:14px;padding:10px 12px;box-sizing:border-box;text-align:left}
+  .bpbar{height:14px;background:#11150e;border-radius:7px;overflow:hidden;margin:6px 0 2px}
+  .bpbar i{display:block;height:100%;background:linear-gradient(90deg,#7b4dff,#c77dff)}
+  .bph{font-weight:900;font-size:15px;margin-bottom:4px}
+  .q{display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:5px 0;border-top:1px solid #2f3a28;gap:8px}
+  .q:first-of-type{border-top:0}
+  .q .xp{color:#c77dff;font-weight:900;white-space:nowrap}
+  .q.done{opacity:.55}
+  .qb{height:5px;background:#11150e;border-radius:3px;overflow:hidden;margin-top:3px}
+  .qb i{display:block;height:100%;background:#7CFC8A}
+  .skins{display:flex;gap:8px;flex-wrap:wrap}
+  .skin{width:44px;height:44px;border-radius:50%;border:3px solid #3d4a34;cursor:pointer;padding:0}
+  .skin.on{border-color:#ffd23f;box-shadow:0 0 10px #ffd23f}
+  .tier{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid #2f3a28;font-size:14px}
+  .tier .n{width:30px;height:30px;border-radius:8px;background:#2c3328;display:flex;align-items:center;justify-content:center;font-weight:900;flex:none}
+  .tier.got .n{background:#7b4dff}
+  .tier .r{flex:1}
+  .tier .st{font-weight:900;font-size:13px;white-space:nowrap}
+  .claim{background:#ffd23f;color:#2a1d00;border:0;border-radius:8px;padding:6px 10px;font-weight:900;font-family:inherit;cursor:pointer}
+  .tier.lock{opacity:.5}
 </style>
 </head>
 <body>
@@ -48,8 +74,19 @@
     <div class="coins">🪙 <span id="mCoins">0</span></div>
     <div class="shop" id="shop"></div>
     <button class="btn" id="mBtn">ИГРАТЬ</button>
+    <button class="bpbtn" id="bpBtn">🎖 Боевой пропуск <span id="bpLvl"></span><span class="dot hidden" id="bpDot"></span></button>
     <div class="row"><button class="btn2" id="sndBtn"></button><button class="btn2" id="musBtn"></button></div>
     <div class="sub" id="mStats"></div>
+  </div>
+
+  <div id="bp" class="ov hidden">
+    <h1 style="font-size:28px">БОЕВОЙ ПРОПУСК</h1>
+    <div class="sub">Сезон 1 · опыт за убийства, уровни и задания</div>
+    <div class="bpbox" id="bpHead"></div>
+    <div class="bpbox"><div class="bph">📅 Задания на сегодня</div><div id="bpQuests"></div></div>
+    <div class="bpbox"><div class="bph">🎨 Скин отряда</div><div class="skins" id="bpSkins"></div></div>
+    <div class="bpbox"><div class="bph">🏆 Награды</div><div id="bpTiers"></div></div>
+    <button class="btn" id="bpClose">НАЗАД</button>
   </div>
 
   <div id="pause" class="ov hidden">
@@ -81,24 +118,29 @@ const UP_IDS = ['men', 'dmg', 'rate', 'gun', 'armor', 'magnet', 'income'];
 function fixSave(s) {
   s = Object.assign({ level: 1, coins: 0, bestLevel: 1, kills: 0, playTime: 0, snd: true, mus: true, ts: 0 }, s || {});
   const up = {}; UP_IDS.forEach(k => up[k] = (s.up && s.up[k]) || 0); s.up = up;
+  s.bp = Object.assign({ xp: 0, claimed: [], skin: 'default', skins: ['default'], daily: null }, s.bp || {});
   return s;
 }
 let SAVE = fixSave(null);
 try { SAVE = fixSave(JSON.parse(localStorage.getItem('dr_save'))); } catch (e) {}
+// в облако пишем только ПОСЛЕ того, как прочитали его — иначе новый телефон затёр бы прогресс пустым сохранением
+let cloudReady = !tgv('6.9');
+const localTs0 = SAVE.ts;
 function persist() {
   SAVE.ts = Date.now();
   const str = JSON.stringify(SAVE);
   try { localStorage.setItem('dr_save', str); } catch (e) {}
-  try { if (tgv('6.9')) tg.CloudStorage.setItem('save', str); } catch (e) {}
+  try { if (cloudReady && tgv('6.9')) tg.CloudStorage.setItem('save', str); } catch (e) {}
 }
 // облако Telegram — главный источник: берём более свежее сохранение
 if (tgv('6.9')) tg.CloudStorage.getItem('save', (err, v) => {
-  if (err || !v) { if (SAVE.ts) persist(); return; }
+  cloudReady = true;
+  if (err || !v) { persist(); return; }
   try {
     const c = fixSave(JSON.parse(v));
-    if (c.ts > SAVE.ts) { SAVE = c; try { localStorage.setItem('dr_save', v); } catch (e) {} applyAudioPrefs(); if (!G || G.over) renderMenu(menuMode); }
-    else if (c.ts < SAVE.ts) persist();
-  } catch (e) {}
+    if (c.ts > localTs0) { SAVE = c; try { localStorage.setItem('dr_save', v); } catch (e) {} applyAudioPrefs(); if (!G || G.over) renderMenu(menuMode); }
+    else persist();
+  } catch (e) { persist(); }
 });
 
 // ================= звук (синтез в реальном времени + можно подложить mp3 в папку sfx) =================
@@ -451,17 +493,33 @@ function whiten(c) {
   return w;
 }
 
-const SOLDIER = mk(26, 36, 13, 20, x => {
-  const cx = 13, cy = 20;
-  x.fillStyle = 'rgba(0,0,0,.3)'; E(x, cx + 1, cy + 8, 9.5, 4.5);
-  x.fillStyle = '#4b3a22'; RR(x, cx - 6, cy + 1, 12, 8, 3); x.fill();
-  x.fillStyle = rg(x, cx, cy, 9, '#6db766', '#1f4a25'); C(x, cx, cy, 8.5);
-  x.fillStyle = '#121212'; x.fillRect(cx + 3, cy - 18, 3, 16);
-  x.fillStyle = '#2a2a2a'; x.fillRect(cx + 1.5, cy - 7, 6, 5);
-  x.fillStyle = '#d9b38c'; C(x, cx + 4.5, cy - 4, 2.2); C(x, cx + 2, cy + 2, 2);
-  x.fillStyle = rg(x, cx, cy - 1, 6, '#9bd48c', '#2c6430'); C(x, cx, cy - 1, 5.6);
-  x.strokeStyle = 'rgba(0,0,0,.35)'; x.lineWidth = 0.8; x.beginPath(); x.arc(cx, cy - 1, 5.6, 0, 7); x.stroke();
-});
+// скины отряда (награды боевого пропуска)
+const SKINS = {
+  default: { name: 'Стандарт',        body: ['#6db766', '#1f4a25'], helm: ['#9bd48c', '#2c6430'], pack: '#4b3a22' },
+  desert:  { name: 'Пустынный',       body: ['#e6c98a', '#7a5a26'], helm: ['#f4dfa8', '#8a6a30'], pack: '#6b4a22' },
+  snow:    { name: 'Снежный',         body: ['#ffffff', '#8a9aa8'], helm: ['#ffffff', '#a4b4c2'], pack: '#5a6a78' },
+  night:   { name: 'Спецназ',         body: ['#5a606c', '#121418'], helm: ['#767d8a', '#1c1f24'], pack: '#22252b' },
+  red:     { name: 'Красная гвардия', body: ['#f06a62', '#6a1a16'], helm: ['#ff9a92', '#7a221e'], pack: '#3a1210' },
+  neon:    { name: 'Неон',            body: ['#5ff0ff', '#1a4a8a'], helm: ['#e0a0ff', '#5a1a9a'], pack: '#1a1a3a', glow: '#5ff0ff' },
+  gold:    { name: 'Золотой',         body: ['#ffe680', '#8a6a00'], helm: ['#fff6c8', '#a07a00'], pack: '#6a4a00', glow: '#ffd23f' },
+};
+const SOLDIERS = {};
+function soldierSprite(id) {
+  if (SOLDIERS[id]) return SOLDIERS[id];
+  const k = SKINS[id] || SKINS.default;
+  return SOLDIERS[id] = mk(26, 36, 13, 20, x => {
+    const cx = 13, cy = 20;
+    if (k.glow) { x.fillStyle = k.glow; x.globalAlpha = 0.3; C(x, cx, cy, 12); x.globalAlpha = 1; }
+    x.fillStyle = 'rgba(0,0,0,.3)'; E(x, cx + 1, cy + 8, 9.5, 4.5);
+    x.fillStyle = k.pack; RR(x, cx - 6, cy + 1, 12, 8, 3); x.fill();
+    x.fillStyle = rg(x, cx, cy, 9, k.body[0], k.body[1]); C(x, cx, cy, 8.5);
+    x.fillStyle = '#121212'; x.fillRect(cx + 3, cy - 18, 3, 16);
+    x.fillStyle = '#2a2a2a'; x.fillRect(cx + 1.5, cy - 7, 6, 5);
+    x.fillStyle = '#d9b38c'; C(x, cx + 4.5, cy - 4, 2.2); C(x, cx + 2, cy + 2, 2);
+    x.fillStyle = rg(x, cx, cy - 1, 6, k.helm[0], k.helm[1]); C(x, cx, cy - 1, 5.6);
+    x.strokeStyle = 'rgba(0,0,0,.35)'; x.lineWidth = 0.8; x.beginPath(); x.arc(cx, cy - 1, 5.6, 0, 7); x.stroke();
+  });
+}
 function zombieSprite(T) {
   const r = T.r, s = r / 11, w = r * 2 + 12, h = r * 2 + 16, cx = w / 2, cy = h / 2 - 2;
   return mk(w, h, cx, cy, x => {
@@ -678,6 +736,7 @@ function spawnRoadLoot() {
 function pickLoot(l) {
   l.dead = true;
   if (l.kind === 'coin') { addCoins(2); SFX.coin(); haptic('light'); return; }
+  quest('loot');
   if (l.kind === 'med') { const v = 2 + Math.floor(G.diff / 2); setN(G.n + v); floatText(l.x, l.y - 20, '+' + v + ' бойцов', '#7CFC8A', 22); SFX.good(); haptic('medium'); return; }
   if (G.wpn < WPN.length - 1) { G.wpn++; floatText(l.x, l.y - 20, WPN[G.wpn].name + '!', WPN[G.wpn].col, 26); }
   else { const v = 15 + G.level * 3; addCoins(v); floatText(l.x, l.y - 20, '+' + Math.round(v * G.income) + ' 🪙', '#ffd23f', 24); }
@@ -695,7 +754,7 @@ function burst(x, y, n, col, spd = 120) {
 }
 function ring(x, y, r, col) { G.rings.push({ x, y, r, col, life: 0.35 }); }
 function decal(x, y, r, col = 'rgba(110,20,20,.55)') { G.decals.push({ x, y, r, col, rot: rnd(0, 3) }); if (G.decals.length > 70) G.decals.shift(); }
-function addCoins(v) { v *= G.income; G.coins += v; G.runCoins += v; }
+function addCoins(v) { v *= G.income; G.coins += v; G.runCoins += v; quest('coins', v); }
 function bankCoins() { if (!G) return; const b = Math.floor(G.coins); SAVE.coins += b; G.coins -= b; }
 
 // ================= логика =================
@@ -726,7 +785,7 @@ function hitZombie(z, d) {
   if (T.armor && G.wpn < 4) d *= T.armor;
   z.hp -= d; z.hit = 0.06;
   if (z.hp <= 0) {
-    z.dead = true; G.kills++;
+    z.dead = true; G.kills++; quest('kills'); if (z.boss) quest('boss');
     addCoins(z.boss ? (z.type === 'mega' ? 80 : 30) + G.level * 10 : z.type === 'tank' || z.type === 'armor' ? 3 : 1);
     burst(z.x, z.y, z.boss ? 50 : 9, '#7a1d1d', z.boss ? 240 : 130); decal(z.x, z.y, z.r * 0.9);
     SFX.zdie();
@@ -745,10 +804,10 @@ function applyGate(s) {
   if (G.over) return;
   const diff = G.n - before;
   floatText(G.squadX, sqY() - 60, (diff >= 0 ? '+' : '') + diff, diff >= 0 ? '#7CC8FF' : '#ff6b6b', 30);
-  if (diff >= 0) { haptic('medium'); SFX.good(); } else { notify('error'); SFX.bad(); G.hurt = 0.3; }
+  if (diff >= 0) { haptic('medium'); SFX.good(); quest('gates'); } else { notify('error'); SFX.bad(); G.hurt = 0.3; }
 }
 function breakCrate(c) {
-  c.dead = true; burst(c.x, c.y, 26, '#c08a4a', 210); ring(c.x, c.y, 50, '#fff'); SFX.crate();
+  c.dead = true; quest('crates'); burst(c.x, c.y, 26, '#c08a4a', 210); ring(c.x, c.y, 50, '#fff'); SFX.crate();
   if (c.kind === 'coin') {
     const v = 10 + G.level * 5; addCoins(v); floatText(c.x, c.y, '+' + Math.round(v * G.income) + ' 🪙', '#ffd23f', 24); SFX.coin();
   } else if (c.kind === 'wpn' && G.wpn < WPN.length - 1) {
@@ -777,7 +836,10 @@ function win() {
 function finish() {
   bankCoins(); SAVE.coins += Math.round(G.coins); G.coins = 0;
   SAVE.kills += G.kills; SAVE.playTime += Math.round(G.t);
-  if (G.won) { SAVE.level = G.level + 1; SAVE.bestLevel = Math.max(SAVE.bestLevel, SAVE.level); }
+  if (G.won) { SAVE.level = G.level + 1; SAVE.bestLevel = Math.max(SAVE.bestLevel, SAVE.level); quest('wins'); }
+  // опыт боевого пропуска за забег
+  G.xpGain = Math.floor(G.kills / 4) + (G.won ? 50 + G.level * 10 : 10);
+  addXP(G.xpGain);
   persist(); closeGuard(false);
   renderMenu(G.won ? 'win' : 'lose');
 }
@@ -1110,7 +1172,8 @@ function drawZombie(z) {
 
 function drawSquad() {
   const g = G, SQY = sqY(), pts = formation(Math.min(g.n, MAXDRAW));
-  for (const i of pts.order) spr(SOLDIER, g.squadX + pts[i][0], SQY + pts[i][1]);
+  const sk = soldierSprite(SAVE.bp.skin);
+  for (const i of pts.order) spr(sk, g.squadX + pts[i][0], SQY + pts[i][1]);
   if (g.flash > 0) {
     ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = WPN[g.wpn].col;
     for (const i of (g.shooters || []).slice(0, 20)) { if (!pts[i]) continue; const fx = g.squadX + pts[i][0] + 4.5, fy = SQY + pts[i][1] - 19; ctx.globalAlpha = 0.9; circle(fx, fy, 3.5); ctx.globalAlpha = 0.35; circle(fx, fy, 7); }
@@ -1222,11 +1285,11 @@ function renderMenu(mode) {
     $('mBtn').textContent = SAVE.level > 1 ? 'ПРОДОЛЖИТЬ' : 'ИГРАТЬ';
   } else if (mode === 'win') {
     T.innerHTML = 'ПОБЕДА!'; P.classList.add('hidden');
-    I.innerHTML = `Убито зомби: <b>${G.kills}</b> · монет: <b>🪙 ${Math.floor(G.runCoins)}</b><br>Дальше: уровень <b>${next}</b> · ${nextName}`;
+    I.innerHTML = `Убито зомби: <b>${G.kills}</b> · монет: <b>🪙 ${Math.floor(G.runCoins)}</b> · <b style="color:#c77dff">+${G.xpGain} XP</b><br>Дальше: уровень <b>${next}</b> · ${nextName}`;
     $('mBtn').textContent = 'ДАЛЬШЕ';
   } else {
     T.innerHTML = 'ОТРЯД ПАЛ'; P.classList.add('hidden');
-    I.innerHTML = `Уровень <b>${G.level}</b> · пройдено <b>${Math.min(100, Math.floor(G.t / G.len * 100))}%</b><br>Убито: <b>${G.kills}</b> · монет: <b>🪙 ${Math.floor(G.runCoins)}</b><br>Прокачайся и попробуй снова!`;
+    I.innerHTML = `Уровень <b>${G.level}</b> · пройдено <b>${Math.min(100, Math.floor(G.t / G.len * 100))}%</b><br>Убито: <b>${G.kills}</b> · монет: <b>🪙 ${Math.floor(G.runCoins)}</b> · <b style="color:#c77dff">+${G.xpGain} XP</b><br>Прокачайся и попробуй снова!`;
     $('mBtn').textContent = 'ЕЩЁ РАЗ';
   }
   $('mCoins').textContent = SAVE.coins;
@@ -1238,6 +1301,9 @@ function renderMenu(mode) {
       <div class="n">${u.name}</div><div class="l">${u.desc(l)}</div>
       <div class="c">${max ? 'МАКС' : '🪙 ' + cost}</div></button>`;
   }).join('');
+  ensureDaily();
+  $('bpLvl').textContent = '· ур. ' + bpTier();
+  $('bpDot').classList.toggle('hidden', !bpHasReward());
   applyAudioPrefs();
 }
 $('shop').addEventListener('click', e => {
@@ -1258,6 +1324,83 @@ function toggleSnd() { SAVE.snd = !SAVE.snd; applyAudioPrefs(); persist(); SFX.c
 function toggleMus() { SAVE.mus = !SAVE.mus; applyAudioPrefs(); persist(); SFX.click(); }
 ['sndBtn', 'sndBtn2'].forEach(id => $(id).onclick = toggleSnd);
 ['musBtn', 'musBtn2'].forEach(id => $(id).onclick = toggleMus);
+
+// ================= боевой пропуск =================
+const BP_TIERS = 30, BP_XP = 250;
+const BP_SKIN_AT = { 5: 'desert', 10: 'snow', 15: 'night', 20: 'red', 25: 'neon', 30: 'gold' };
+const bpReward = t => BP_SKIN_AT[t] ? { type: 'skin', id: BP_SKIN_AT[t] } : { type: 'coins', v: 60 + t * 25 };
+const bpTier = () => Math.min(BP_TIERS, Math.floor(SAVE.bp.xp / BP_XP));
+const bpHasReward = () => { for (let t = 1; t <= bpTier(); t++) if (!SAVE.bp.claimed.includes(t)) return true; return false; };
+const QUESTS = {
+  kills:  { text: n => `Убей ${n} зомби`,               n: [150, 300], xp: 120 },
+  wins:   { text: n => `Пройди уровней: ${n}`,           n: [2, 3],     xp: 150 },
+  crates: { text: n => `Разбей ящиков: ${n}`,            n: [3, 6],     xp: 100 },
+  boss:   { text: n => `Убей боссов: ${n}`,              n: [1, 2],     xp: 130 },
+  gates:  { text: n => `Пройди синих ворот: ${n}`,       n: [6, 12],    xp: 100 },
+  loot:   { text: n => `Подбери вещей с дороги: ${n}`,   n: [2, 4],     xp: 100 },
+  coins:  { text: n => `Собери монет: ${n}`,             n: [300, 600], xp: 110 },
+};
+const today = () => { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
+function ensureDaily() {
+  const b = SAVE.bp;
+  if (b.daily && b.daily.date === today()) return;
+  const ids = Object.keys(QUESTS).sort(() => Math.random() - 0.5).slice(0, 3);
+  b.daily = { date: today(), q: ids.map(id => ({ id, need: ri(...QUESTS[id].n), have: 0, done: false })) };
+  persist();
+}
+function addXP(v) {
+  const before = bpTier();
+  SAVE.bp.xp += Math.round(v);
+  if (bpTier() > before && G && !G.over) floatText(MID, 150, '🎖 Уровень пропуска ' + bpTier() + '!', '#c77dff', 22, 1.8);
+}
+function quest(id, amt = 1) {
+  const d = SAVE.bp.daily; if (!d || d.date !== today()) return;
+  for (const q of d.q) if (q.id === id && !q.done) {
+    q.have = Math.min(q.need, q.have + amt);
+    if (q.have >= q.need) {
+      q.done = true; addXP(QUESTS[id].xp);
+      if (G && !G.over) floatText(MID, 120, '✅ Задание: +' + QUESTS[id].xp + ' XP', '#7CFC8A', 20, 1.8);
+      SFX.good();
+    }
+  }
+}
+function renderBP() {
+  ensureDaily();
+  const b = SAVE.bp, tier = bpTier(), into = tier >= BP_TIERS ? BP_XP : b.xp % BP_XP;
+  $('bpHead').innerHTML = `<div class="bph">Уровень пропуска: <span style="color:#c77dff">${tier}</span> / ${BP_TIERS}</div>
+    <div class="bpbar"><i style="width:${100 * into / BP_XP}%"></i></div>
+    <div class="sub" style="opacity:.75">${tier >= BP_TIERS ? 'Пропуск пройден полностью! 👑' : `${into} / ${BP_XP} XP до следующего уровня`}</div>`;
+  $('bpQuests').innerHTML = b.daily.q.map(q => `<div class="q ${q.done ? 'done' : ''}"><div style="flex:1">${q.done ? '✅ ' : ''}${QUESTS[q.id].text(q.need)}
+      <div class="qb"><i style="width:${100 * q.have / q.need}%"></i></div><span class="sub">${Math.floor(q.have)} / ${q.need}</span></div>
+      <div class="xp">+${QUESTS[q.id].xp} XP</div></div>`).join('') + '<div class="sub" style="margin-top:4px">Новые задания каждый день</div>';
+  $('bpSkins').innerHTML = Object.keys(SKINS).map(id => {
+    const k = SKINS[id], own = b.skins.includes(id);
+    return `<button class="skin ${b.skin === id ? 'on' : ''}" data-skin="${id}" title="${k.name}" style="background:radial-gradient(circle at 35% 35%, ${k.body[0]}, ${k.body[1]});${own ? '' : 'opacity:.25'}">${own ? '' : '🔒'}</button>`;
+  }).join('') + `<div class="sub" style="width:100%">Сейчас: ${SKINS[b.skin].name}</div>`;
+  let rows = '';
+  for (let t = 1; t <= BP_TIERS; t++) {
+    const r = bpReward(t), got = b.claimed.includes(t), open = t <= tier;
+    const label = r.type === 'skin' ? `🎨 Скин «${SKINS[r.id].name}»` : `🪙 ${r.v} монет`;
+    const st = got ? '<span class="st" style="color:#7CFC8A">✓ получено</span>' : open ? `<button class="claim" data-tier="${t}">Забрать</button>` : '<span class="st">🔒</span>';
+    rows += `<div class="tier ${got ? 'got' : open ? '' : 'lock'}"><div class="n">${t}</div><div class="r">${label}</div>${st}</div>`;
+  }
+  $('bpTiers').innerHTML = rows;
+}
+$('bpBtn').onclick = () => { audioInit(); SFX.click(); renderBP(); $('bp').classList.remove('hidden'); $('bp').scrollTop = 0; };
+$('bpClose').onclick = () => { SFX.click(); $('bp').classList.add('hidden'); renderMenu(menuMode); };
+$('bp').addEventListener('click', e => {
+  const c = e.target.closest('.claim'), s = e.target.closest('.skin');
+  if (c) {
+    const t = +c.dataset.tier, r = bpReward(t);
+    if (t > bpTier() || SAVE.bp.claimed.includes(t)) return;
+    SAVE.bp.claimed.push(t);
+    if (r.type === 'coins') SAVE.coins += r.v;
+    else { if (!SAVE.bp.skins.includes(r.id)) SAVE.bp.skins.push(r.id); SAVE.bp.skin = r.id; }
+    persist(); SFX.pickup(); notify('success'); renderBP();
+  } else if (s && SAVE.bp.skins.includes(s.dataset.skin)) {
+    SAVE.bp.skin = s.dataset.skin; persist(); SFX.click(); renderBP();
+  }
+});
 function pauseGame() {
   if (!G || G.over || userPaused) return;
   userPaused = true; dragging = false; $('pause').classList.remove('hidden'); applyAudioPrefs();
@@ -1281,7 +1424,7 @@ function loop(now) {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (G && !G.over) pauseGame(); else persist();
-    if (AC) AC.suspend(); if (unlockEl) unlockEl.pause();
+    if (AC && AC.state !== 'closed') AC.suspend().catch(() => {}); if (unlockEl) unlockEl.pause();
   } else { last = performance.now(); if (AC) AC.resume().catch(() => {}); if (unlockEl && AC) unlockEl.play().catch(() => {}); }
 });
 addEventListener('pagehide', () => { if (G && !G.over) bankCoins(); persist(); });
